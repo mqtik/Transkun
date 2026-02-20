@@ -1,4 +1,5 @@
 import argparse
+import importlib.resources
 
 from .Data import writeMidi
 import torch
@@ -7,88 +8,114 @@ import numpy as np
 from .Util import computeParamSize
 
 
-def readAudio(path,  normalize= True):
-    import pydub
-    audio = pydub.AudioSegment.from_mp3(path)
-    y = np.array(audio.get_array_of_samples())
-    y = y.reshape(-1, audio.channels)
-    if normalize:
-        y =  np.float32(y)/2**15
-    return audio.frame_rate, y
+_cached_model = None
+_cached_device = None
+
+
+def readAudio(path, normalize=True):
+    import subprocess
+    import tempfile
+    import os
+    import soundfile as sf
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.wav', '.flac', '.ogg'):
+        y, fs = sf.read(path, dtype='float32')
+    else:
+        tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+        tmp.close()
+        try:
+            subprocess.run(
+                ['ffmpeg', '-y', '-i', path, '-ar', '44100', '-ac', '2', tmp.name],
+                check=True, capture_output=True,
+            )
+            y, fs = sf.read(tmp.name, dtype='float32')
+        finally:
+            os.unlink(tmp.name)
+
+    if y.ndim == 1:
+        y = y.reshape(-1, 1)
+    if not normalize:
+        y = (y * 2**15).astype(np.int16)
+    return fs, y
+
+
+def load_model(device="cpu", weight=None, conf=None):
+    global _cached_model, _cached_device
+
+    if _cached_model is not None and _cached_device == device:
+        return _cached_model
+
+    pretrained = importlib.resources.files(__package__).joinpath("pretrained")
+    if weight is None:
+        weight = str(pretrained.joinpath("2.0.pt"))
+    if conf is None:
+        conf = str(pretrained.joinpath("2.0.conf"))
+
+    confManager = moduleconf.parseFromFile(conf)
+    TransKun = confManager["Model"].module.TransKun
+    model_conf = confManager["Model"].config
+
+    checkpoint = torch.load(weight, map_location=device)
+    model = TransKun(conf=model_conf).to(device)
+
+    if "best_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["best_state_dict"], strict=False)
+    else:
+        model.load_state_dict(checkpoint["state_dict"], strict=False)
+
+    model.eval()
+    _cached_model = model
+    _cached_device = device
+    return model
+
+
+def transcribe_audio(audio_path, device="cpu", weight=None, conf=None):
+    model = load_model(device=device, weight=weight, conf=conf)
+
+    with torch.no_grad():
+        fs, audio = readAudio(audio_path)
+
+        if fs != model.fs:
+            import soxr
+            audio = soxr.resample(audio, fs, model.fs)
+
+        x = torch.from_numpy(audio).to(device)
+        notes = model.transcribe(x, discardSecondHalf=False)
+
+    return writeMidi(notes)
 
 
 def main():
-
-    import pkg_resources
-
-    defaultWeight =  (pkg_resources.resource_filename(__name__, "pretrained/2.0.pt"))
-    defaultConf =  (pkg_resources.resource_filename(__name__, "pretrained/2.0.conf"))
+    pretrained = importlib.resources.files(__package__).joinpath("pretrained")
+    defaultWeight = str(pretrained.joinpath("2.0.pt"))
+    defaultConf = str(pretrained.joinpath("2.0.conf"))
 
     argumentParser = argparse.ArgumentParser()
-    argumentParser.add_argument("audioPath", help = "path to the input audio file")
-    argumentParser.add_argument("outPath", help = "path to the output MIDI file")
-    argumentParser.add_argument("--weight", default = defaultWeight, help = "path to the pretrained weight")
-    argumentParser.add_argument("--conf", default = defaultConf, help = "path to the model conf")
-    argumentParser.add_argument("--device", default = "cpu", nargs= "?", help = " The device used to perform the most computations (optional), DEFAULT: cpu")
-    argumentParser.add_argument("--segmentHopSize", type=float, required=False, help = " The segment hopsize for processing the entire audio file (s), DEFAULT: the value defined in model conf")
-    argumentParser.add_argument("--segmentSize", type=float, required=False, help = " The segment size for processing the entire audio file (s), DEFAULT: the value defined in model conf")
+    argumentParser.add_argument("audioPath", help="path to the input audio file")
+    argumentParser.add_argument("outPath", help="path to the output MIDI file")
+    argumentParser.add_argument("--weight", default=defaultWeight, help="path to the pretrained weight")
+    argumentParser.add_argument("--conf", default=defaultConf, help="path to the model conf")
+    argumentParser.add_argument("--device", default="cpu", nargs="?", help="The device used to perform the most computations (optional), DEFAULT: cpu")
+    argumentParser.add_argument("--segmentHopSize", type=float, required=False, help="The segment hopsize for processing the entire audio file (s)")
+    argumentParser.add_argument("--segmentSize", type=float, required=False, help="The segment size for processing the entire audio file (s)")
 
     args = argumentParser.parse_args()
 
-    path = args.weight
-    device = args.device
+    model = load_model(device=args.device, weight=args.weight, conf=args.conf)
 
-    # TODO fix the conf
-    confPath = args.conf
+    with torch.no_grad():
+        fs, audio = readAudio(args.audioPath)
 
-    confManager = moduleconf.parseFromFile(confPath)
-    TransKun = confManager["Model"].module.TransKun
-    conf = confManager["Model"].config
+        if fs != model.fs:
+            import soxr
+            audio = soxr.resample(audio, fs, model.fs)
 
-
-    checkpoint = torch.load(path, map_location = device)
-
-
-    # conf = TransKun.Config()
-    # conf.__dict__ = checkpoint['conf']
-
-    model = TransKun(conf = conf).to(device)
-    # print("#Param(M):", computeParamSize(model))
-
-
-    if not "best_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["state_dict"], strict=False)
-    else:
-        model.load_state_dict(checkpoint["best_state_dict"], strict=False)
-
-    model.eval()
-
-
-    audioPath = args.audioPath
-    outPath = args.outPath
-    torch.set_grad_enabled(False)
-
-
-    fs, audio= readAudio(audioPath)
-
-
-    if(fs != model.fs):
-        import soxr
-        audio = soxr.resample(
-                audio,          # 1D(mono) or 2D(frames, channels) array input
-                fs,      # input samplerate
-                model.fs# target samplerate
-)
-
-
-
-    x = torch.from_numpy(audio).to(device)
-
-
-    notesEst = model.transcribe(x, stepInSecond=args.segmentHopSize, segmentSizeInSecond=args.segmentSize, discardSecondHalf=False)
+        x = torch.from_numpy(audio).to(args.device)
+        notesEst = model.transcribe(x, stepInSecond=args.segmentHopSize, segmentSizeInSecond=args.segmentSize, discardSecondHalf=False)
 
     outputMidi = writeMidi(notesEst)
-    outputMidi.write(outPath)
+    outputMidi.write(args.outPath)
 
 
 if __name__ == "__main__":

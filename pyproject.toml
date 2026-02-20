@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transkun"
+version = "2.1.0"
+description = "Automatic piano transcription using Neural Semi-CRFs (ISMIR 2024)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "Yujia Yan" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "torch>=2.0",
+    "torchaudio>=2.0",
+    "numpy",
+    "scipy",
+    "pretty_midi",
+    "soundfile",
+    "soxr",
+    "ncls",
+    "moduleconf",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+train = [
+    "mir_eval",
+    "seaborn",
+    "matplotlib",
+    "tensorboard",
+    "torch_optimizer",
+    "sox",
+]
+
+[project.scripts]
+transkun = "transkun.transcribe:main"
+transkunEval = "transkun.computeMetrics:main"
+
+[project.urls]
+Homepage = "https://github.com/mqtik/Transkun"
+Repository = "https://github.com/mqtik/Transkun"
+
+[tool.setuptools.packages.find]
+include = ["transkun*"]
+
+[tool.setuptools.package-data]
+"transkun.pretrained" = ["*.pt", "*.conf"]
