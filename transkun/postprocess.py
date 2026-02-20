@@ -1,9 +1,9 @@
 import pretty_midi
 
 
-MIN_NOTE_DURATION = 0.03
-DUPLICATE_MERGE_WINDOW = 0.05
-MIN_VELOCITY = 5
+MIN_NOTE_DURATION = 0.05
+DUPLICATE_MERGE_WINDOW = 0.03
+MIN_VELOCITY = 8
 
 
 def filter_notes(midi, min_duration=MIN_NOTE_DURATION, merge_window=DUPLICATE_MERGE_WINDOW, min_velocity=MIN_VELOCITY):
